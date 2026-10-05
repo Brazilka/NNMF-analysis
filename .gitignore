@@ -1,0 +1,25 @@
+# Local environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Experimental data, reference workbooks, and local analysis settings
+DATA/
+*.xls
+*.xlsx
+*.opju
+**/.nnmf_settings.json
+MATLAB/spm/
+MATLAB/thin 532/
+MATLAB/X.txt
+MATLAB/*.m
+
+# Generated analysis outputs and archives
+**/export/
+**/export_*/
+**/figures/
+*.rar
+
+# MATLAB autosave files
+*.asv
