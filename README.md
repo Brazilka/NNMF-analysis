@@ -16,33 +16,31 @@ random initialization without a workbook.
 
 ## Setup
 
-Use Python 3.9 or newer, then install the dependencies:
+Use Python 3.9 or newer. From the repository root, create a virtual environment
+and install the requirements:
 
 ```powershell
-python -m pip install -r requirements.txt
+py -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-Open `Scripts/nnmf_full_fixed_jh_V3_schrenkv.ipynb` in Jupyter or VS Code and run
-the cells in order. The setup window lets you choose the working folder, data
-subfolders, and analysis parameters. Do not run the Python module directly if you
-want to use the notebook's visible, cell-by-cell workflow.
-
-The notebook uses the data-processing and plotting functions from
-`nnmf_full_fixed_jh_V3.py`; keep both files together in the `Scripts` folder.
-
-## Build a Windows application
-
-The notebook is for development; the Python script is the executable entry point.
-Build on Windows with Python 3.9 or newer:
+To run the Python script:
 
 ```powershell
-python -m venv Scripts\.venv
-Scripts\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
-.\Scripts\build_windows.ps1
+.\.venv\Scripts\python.exe Scripts\nnmf_full_fixed_jh_V3.py
 ```
 
-The folder-based build is created at `dist\NNMF-Analysis`. Distribute the entire
-folder (for example, as a ZIP), and have users double-click
-`NNMF-Analysis.exe` inside it. The console stays visible to show progress and
-errors. Users do not need Python installed, but they will still select their own
-measurement data folder and reference workbook in the application.
+To run the notebook from Jupyter:
+
+```powershell
+.\.venv\Scripts\python.exe -m notebook
+```
+
+Then open `Scripts/nnmf_full_fixed_jh_V3_schrenkv.ipynb` and select the `.venv`
+Python kernel if prompted. In VS Code, open the notebook and select the
+repository's `.venv` as its kernel.
+
+The script and notebook use the same analysis code; keep both files together in
+the `Scripts` folder. The script opens the analysis setup window directly, while
+the notebook provides a cell-by-cell workflow. Measurement data and reference
+workbooks are not included in the repository; select your own files in the setup.
