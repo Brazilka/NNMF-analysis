@@ -12,7 +12,9 @@ Measurement data, reference workbooks, and generated exports are not included in
 repository. Keep them locally and select the appropriate data folder in the setup
 window. If `INIT_COMP` is greater than zero, select a reference workbook containing a
 wavelength column followed by the reference spectra. Set `INIT_COMP` to zero to use
-random initialization without a workbook.
+random initialization without a workbook. In the setup window, choose whether NNMF
+fits every individual spectrum or one arithmetic average per selected data folder.
+Individual spectra remain the default.
 
 ## Setup
 

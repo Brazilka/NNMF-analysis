@@ -35,8 +35,10 @@ COMPONENTS = 2
 DEF_SPECTRA = True # Initialize the NNMF using reference spectra ref.xlsx
 USE_GAUSSIAN_REFERENCE = False # If true and INIT_COMP == 0, fit Gaussian reference curves and use them for initialization.
 INIT_COMP = COMPONENTS # Number of reference spectra to use for initialization (must be <= COMPONENTS)
+NNMF_INPUT_MODE = "individual" # Fit individual spectra or one arithmetic average per folder.
 
 # Each source spectrum has its own mean in this range subtracted before folder averaging.
+SUBTRACT_BASELINE = True
 BASEMEAN_LOWER = 300
 BASEMEAN_UPPER = 510
 
@@ -46,8 +48,10 @@ THRESHOLD_UPPER = 920
 
 # Component plotting colors are sampled from the prism colormap.
 COLOURS = list(plt.get_cmap("prism")(np.linspace(0.0, 1.0, 4, endpoint=False)))
-NV0 = 575 
-NVN = 637 #NV minus
+NORMALIZATION_WAVELENGTH = 575
+NORMALIZE_AT_WAVELENGTH = True
+NORMALIZE_BY_AREA = True
+REFERENCE_MARKER_WAVELENGTH = 637
 SHOW_COMPARED = True
 CHANGE_NAME = True
 OWN_AXIS = False
@@ -72,13 +76,17 @@ ANALYSIS_SETTINGS = {
     "DEF_SPECTRA",
     "USE_GAUSSIAN_REFERENCE",
     "INIT_COMP",
+    "NNMF_INPUT_MODE",
+    "SUBTRACT_BASELINE",
     "BASEMEAN_LOWER",
     "BASEMEAN_UPPER",
     "THRESHOLD_LOWER",
     "THRESHOLD_UPPER",
     "COLOURS",
-    "NV0",
-    "NVN",
+    "NORMALIZATION_WAVELENGTH",
+    "NORMALIZE_AT_WAVELENGTH",
+    "NORMALIZE_BY_AREA",
+    "REFERENCE_MARKER_WAVELENGTH",
     "SHOW_COMPARED",
     "CHANGE_NAME",
     "OWN_AXIS",
@@ -143,6 +151,10 @@ def _list_spectrum_files(folder: Path, input_format: str | None = None) -> list[
 
 PARAMETER_FILE = ".nnmf_settings.json"
 PARAMETER_FIELDS = {
+    "NNMF_INPUT_MODE": str,
+    "NORMALIZE_BY_AREA": bool,
+    "NORMALIZE_AT_WAVELENGTH": bool,
+    "SUBTRACT_BASELINE": bool,
     "COMPONENTS": int,
     "INIT_COMP": int,
     "BASEMEAN_LOWER": float,
@@ -153,8 +165,8 @@ PARAMETER_FIELDS = {
     "MAX_ITERATIONS": int,
     "RANDOM_SEED": int,
     "NNMF_NEGATIVE_TOLERANCE": float,
-    "NV0": float,
-    "NVN": float,
+    "NORMALIZATION_WAVELENGTH": float,
+    "REFERENCE_MARKER_WAVELENGTH": float,
     "DEF_SPECTRA": bool,
     "USE_GAUSSIAN_REFERENCE": bool,
     "SHOW_COMPARED": bool,
@@ -184,6 +196,14 @@ def _validate_analysis_parameters(parameters: dict[str, object]) -> dict[str, ob
             if not is_whole_number:
                 raise ValueError(f"{name} must be a whole number")
             value = int(value)
+        elif expected_type is str:
+            if name == "NNMF_INPUT_MODE":
+                if not isinstance(value, str) or value not in {
+                    "individual", "folder_average"
+                }:
+                    raise ValueError(
+                        "NNMF_INPUT_MODE must be 'individual' or 'folder_average'"
+                    )
         else:
             value = float(value)
             if not math.isfinite(value):
@@ -211,7 +231,7 @@ def _validate_analysis_parameters(parameters: dict[str, object]) -> dict[str, ob
     baseline_upper = float(validated.get("BASEMEAN_UPPER", BASEMEAN_UPPER))
     fit_lower = float(validated.get("THRESHOLD_LOWER", THRESHOLD_LOWER))
     fit_upper = float(validated.get("THRESHOLD_UPPER", THRESHOLD_UPPER))
-    if baseline_lower >= baseline_upper:
+    if validated.get("SUBTRACT_BASELINE", SUBTRACT_BASELINE) and baseline_lower >= baseline_upper:
         raise ValueError("Baseline lower wavelength must be less than the upper wavelength")
     if fit_lower >= fit_upper:
         raise ValueError("Fit lower wavelength must be less than the upper wavelength")
@@ -246,6 +266,7 @@ def edit_analysis_parameters(data_folder: Path,
 
     entries: dict[str, tk.Entry] = {}
     booleans: dict[str, tk.BooleanVar] = {}
+    parameters.setdefault("NNMF_INPUT_MODE", NNMF_INPUT_MODE)
     fields = [
         ("COMPONENTS", "Number of components"),
         ("INIT_COMP", "Reference components for initialization"),
@@ -257,8 +278,8 @@ def edit_analysis_parameters(data_folder: Path,
         ("MAX_ITERATIONS", "Maximum iterations per replicate"),
         ("RANDOM_SEED", "Random seed"),
         ("NNMF_NEGATIVE_TOLERANCE", "Negative-value tolerance"),
-        ("NV0", "Plot marker 1 (nm)"),
-        ("NVN", "Plot marker 2 (nm)"),
+        ("NORMALIZATION_WAVELENGTH", "Normalization wavelength (also marked on plots, nm)"),
+        ("REFERENCE_MARKER_WAVELENGTH", "Plot-only reference marker (nm)"),
     ]
     for row, (name, label) in enumerate(fields):
         ttk.Label(root, text=label).grid(row=row, column=0, sticky="w", padx=10, pady=3)
@@ -267,9 +288,31 @@ def edit_analysis_parameters(data_folder: Path,
         entry.grid(row=row, column=1, sticky="ew", padx=10, pady=3)
         entries[name] = entry
 
+    ttk.Label(root, text="Spectra sent to NNMF").grid(
+        row=len(fields), column=0, sticky="w", padx=10, pady=3
+    )
+    input_mode_labels = {
+        "Individual spectra": "individual",
+        "One arithmetic average per folder": "folder_average",
+    }
+    input_mode_var = tk.StringVar(value=next(
+        label for label, mode in input_mode_labels.items()
+        if mode == parameters["NNMF_INPUT_MODE"]
+    ))
+    ttk.Combobox(
+        root, textvariable=input_mode_var,
+        values=tuple(input_mode_labels), state="readonly", width=30,
+    ).grid(row=len(fields), column=1, sticky="ew", padx=10, pady=3)
+
     parameters.setdefault("USE_GAUSSIAN_REFERENCE", USE_GAUSSIAN_REFERENCE)
-    bool_row = len(fields)
+    parameters.setdefault("SUBTRACT_BASELINE", SUBTRACT_BASELINE)
+    parameters.setdefault("NORMALIZE_AT_WAVELENGTH", NORMALIZE_AT_WAVELENGTH)
+    parameters.setdefault("NORMALIZE_BY_AREA", NORMALIZE_BY_AREA)
+    bool_row = len(fields) + 1
     for offset, (name, label) in enumerate((
+        ("SUBTRACT_BASELINE", "Subtract baseline"),
+        ("NORMALIZE_AT_WAVELENGTH", "Normalize at selected wavelength"),
+        ("NORMALIZE_BY_AREA", "Normalize by area"),
         ("USE_GAUSSIAN_REFERENCE", "Fit Gaussian reference curves when INIT_COMP = 0"),
         ("SHOW_COMPARED", "Keep plots open after saving"),
     )):
@@ -281,9 +324,9 @@ def edit_analysis_parameters(data_folder: Path,
 
     ttk.Label(
         root,
-        text="Folder averages remain arithmetic; individual spectra use area normalization.",
+        text="The selected input mode determines whether NNMF uses individual spectra or one arithmetic average per folder.",
         wraplength=390,
-    ).grid(row=bool_row + 2, column=0, columnspan=2, sticky="w", padx=10, pady=(8, 4))
+    ).grid(row=bool_row + 5, column=0, columnspan=2, sticky="w", padx=10, pady=(8, 4))
 
     result: dict[str, object] = {}
 
@@ -292,6 +335,7 @@ def edit_analysis_parameters(data_folder: Path,
             candidate: dict[str, object] = {
                 name: entry.get().strip() for name, entry in entries.items()
             }
+            candidate["NNMF_INPUT_MODE"] = input_mode_labels[input_mode_var.get()]
             candidate.update({name: variable.get() for name, variable in booleans.items()})
             result.update(_validate_analysis_parameters(candidate))
             temporary_path = settings_path.with_name(settings_path.name + ".tmp")
@@ -308,7 +352,7 @@ def edit_analysis_parameters(data_folder: Path,
         root.destroy()
 
     buttons = ttk.Frame(root)
-    buttons.grid(row=bool_row + 3, column=0, columnspan=2, sticky="e", padx=10, pady=10)
+    buttons.grid(row=bool_row + 6, column=0, columnspan=2, sticky="e", padx=10, pady=10)
     ttk.Button(buttons, text="Cancel", command=cancel).pack(side="right", padx=(6, 0))
     ttk.Button(buttons, text="Use these parameters", command=save_and_close).pack(side="right")
     root.protocol("WM_DELETE_WINDOW", cancel)
@@ -363,7 +407,11 @@ def select_analysis_setup(default_data_folder: Path,
     boolean_controls: dict[str, ttk.Checkbutton] = {}
     folder_names: list[str] = []
     selected_parameters = defaults.copy()
+    selected_parameters.setdefault("SUBTRACT_BASELINE", SUBTRACT_BASELINE)
+    selected_parameters.setdefault("NORMALIZE_AT_WAVELENGTH", NORMALIZE_AT_WAVELENGTH)
+    selected_parameters.setdefault("NORMALIZE_BY_AREA", NORMALIZE_BY_AREA)
     selected_parameters.setdefault("USE_GAUSSIAN_REFERENCE", USE_GAUSSIAN_REFERENCE)
+    selected_parameters.setdefault("NNMF_INPUT_MODE", NNMF_INPUT_MODE)
     setup: dict[str, object] = {}
 
     ttk.Label(root, text="Data folder").grid(row=0, column=0, sticky="w", padx=10, pady=(10, 3))
@@ -426,8 +474,8 @@ def select_analysis_setup(default_data_folder: Path,
         ("MAX_ITERATIONS", "Maximum iterations per replicate"),
         ("RANDOM_SEED", "Random seed"),
         ("NNMF_NEGATIVE_TOLERANCE", "Negative-value tolerance"),
-        ("NV0", "Plot marker 1 (nm)"),
-        ("NVN", "Plot marker 2 (nm)"),
+        ("NORMALIZATION_WAVELENGTH", "Normalization wavelength (also marked on plots, nm)"),
+        ("REFERENCE_MARKER_WAVELENGTH", "Plot-only reference marker (nm)"),
     ]
     for row, (name, label) in enumerate(fields):
         ttk.Label(parameter_frame, text=label).grid(
@@ -436,6 +484,23 @@ def select_analysis_setup(default_data_folder: Path,
         entry = ttk.Entry(parameter_frame, width=16)
         entry.grid(row=row, column=1, sticky="ew", padx=8, pady=2)
         entries[name] = entry
+
+    input_mode_row = len(fields)
+    ttk.Label(parameter_frame, text="Spectra sent to NNMF").grid(
+        row=input_mode_row, column=0, sticky="w", padx=8, pady=2
+    )
+    input_mode_labels = {
+        "Individual spectra": "individual",
+        "One arithmetic average per folder": "folder_average",
+    }
+    input_mode_var = tk.StringVar(value=next(
+        label for label, mode in input_mode_labels.items()
+        if mode == selected_parameters["NNMF_INPUT_MODE"]
+    ))
+    ttk.Combobox(
+        parameter_frame, textvariable=input_mode_var,
+        values=tuple(input_mode_labels), state="readonly",
+    ).grid(row=input_mode_row, column=1, sticky="ew", padx=8, pady=2)
 
     def update_reference_controls(_event: object = None) -> None:
         try:
@@ -452,8 +517,11 @@ def select_analysis_setup(default_data_folder: Path,
 
     entries["INIT_COMP"].bind("<KeyRelease>", update_reference_controls)
     selected_parameters.setdefault("USE_GAUSSIAN_REFERENCE", USE_GAUSSIAN_REFERENCE)
-    bool_row = len(fields)
+    bool_row = len(fields) + 1
     for offset, (name, label) in enumerate((
+        ("SUBTRACT_BASELINE", "Subtract baseline"),
+        ("NORMALIZE_AT_WAVELENGTH", "Normalize at selected wavelength"),
+        ("NORMALIZE_BY_AREA", "Normalize by area"),
         ("USE_GAUSSIAN_REFERENCE", "Fit Gaussian reference curves when INIT_COMP = 0"),
         ("SHOW_COMPARED", "Keep plots open after saving"),
     )):
@@ -501,6 +569,8 @@ def select_analysis_setup(default_data_folder: Path,
             ("BASEMEAN_LOWER", "BASEMEAN_UPPER", "Baseline band", 0.08),
             ("THRESHOLD_LOWER", "THRESHOLD_UPPER", "Fit / output", 0.62),
         ):
+            if lower_name == "BASEMEAN_LOWER" and not boolean_vars["SUBTRACT_BASELINE"].get():
+                continue
             try:
                 lower = float(entries[lower_name].get())
                 upper = float(entries[upper_name].get())
@@ -583,6 +653,8 @@ def select_analysis_setup(default_data_folder: Path,
         if not lower < upper:
             return
         if selection_mode_var.get() == "baseline":
+            if not boolean_vars["SUBTRACT_BASELINE"].get():
+                return
             lower_name, upper_name = "BASEMEAN_LOWER", "BASEMEAN_UPPER"
         else:
             lower_name, upper_name = "THRESHOLD_LOWER", "THRESHOLD_UPPER"
@@ -605,12 +677,24 @@ def select_analysis_setup(default_data_folder: Path,
     folder_list.bind("<<ListboxSelect>>", refresh_preview)
     input_format_var.trace_add("write", refresh_preview)
 
+    def update_baseline_controls() -> None:
+        enabled = boolean_vars["SUBTRACT_BASELINE"].get()
+        for name in ("BASEMEAN_LOWER", "BASEMEAN_UPPER"):
+            entries[name].configure(state="normal" if enabled else "disabled")
+        if not enabled:
+            selection_mode_var.set("fit")
+        update_preview_ranges()
+
+    boolean_controls["SUBTRACT_BASELINE"].configure(command=update_baseline_controls)
+
     ttk.Label(
         root,
         text=(
-            "Normalization follows MATLAB: subtract each spectrum's baseline, scale it "
-            "at NV0, crop to the selected fit/output range, then divide by its own trapezoidal area. "
-            "Folder averages are arithmetic and are not used for NNMF. Set reference "
+            "Preprocessing: optionally subtract each spectrum's baseline, optionally scale it "
+            "at the normalization wavelength, crop to the selected fit/output range, then optionally divide by its own trapezoidal area. "
+            "Turn off both normalization options to preserve intensity scaling; the wavelength remains a plot marker when wavelength scaling is off. "
+            "Choose individual spectra or one arithmetic average per folder as NNMF input. "
+            "Set reference "
             "components to 0 for random-only initialization; use the Gaussian-reference option to "
             "fit one curve per configured component and use those as NNMF starting spectra."
         ),
@@ -639,14 +723,24 @@ def select_analysis_setup(default_data_folder: Path,
             raise ValueError(f"Saved parameters in {settings_path} must be a JSON object")
         selected_parameters = defaults.copy()
         selected_parameters.update(_validate_analysis_parameters(raw_parameters))
+        selected_parameters.setdefault("SUBTRACT_BASELINE", SUBTRACT_BASELINE)
+        selected_parameters.setdefault("NORMALIZE_AT_WAVELENGTH", NORMALIZE_AT_WAVELENGTH)
+        selected_parameters.setdefault("NORMALIZE_BY_AREA", NORMALIZE_BY_AREA)
         selected_parameters.setdefault("USE_GAUSSIAN_REFERENCE", USE_GAUSSIAN_REFERENCE)
+        selected_parameters.setdefault("NNMF_INPUT_MODE", NNMF_INPUT_MODE)
         input_format_var.set(_validate_input_format(saved.get("input_format", INPUT_FORMAT)))
         for name, entry in entries.items():
+            entry.configure(state="normal")
             entry.delete(0, tk.END)
             entry.insert(0, str(selected_parameters[name]))
+        input_mode_var.set(next(
+            label for label, mode in input_mode_labels.items()
+            if mode == selected_parameters["NNMF_INPUT_MODE"]
+        ))
         update_reference_controls()
         for name, variable in boolean_vars.items():
             variable.set(bool(selected_parameters[name]))
+        update_baseline_controls()
 
         saved_reference = saved.get("reference_file")
         if saved_reference:
@@ -710,6 +804,7 @@ def select_analysis_setup(default_data_folder: Path,
             candidate: dict[str, object] = {
                 name: entry.get().strip() for name, entry in entries.items()
             }
+            candidate["NNMF_INPUT_MODE"] = input_mode_labels[input_mode_var.get()]
             candidate.update({name: variable.get() for name, variable in boolean_vars.items()})
             parameters = _validate_analysis_parameters(candidate)
             input_format = _validate_input_format(input_format_var.get())
@@ -780,11 +875,12 @@ def write_spectrum(path: Path, values: np.ndarray) -> None:
 
 
 def subtract_spectrum_baseline(spectrum: np.ndarray) -> np.ndarray:
-    """Subtract this spectrum's own mean intensity in the configured baseline band."""
-    lower_index = int(np.argmin(np.abs(spectrum[:, 0] - BASEMEAN_LOWER)))
-    upper_index = int(np.argmin(np.abs(spectrum[:, 0] - BASEMEAN_UPPER)))
-    if lower_index > upper_index:
-        lower_index, upper_index = upper_index, lower_index
+    """Optionally subtract this spectrum's mean in the configured baseline band."""
+    if not SUBTRACT_BASELINE:
+        return spectrum.copy()
+    lower_index = int(np.argmin(np.abs(spectrum[:, 0] - BASEMEAN_LOWER))) 
+    upper_index = int(np.argmin(np.abs(spectrum[:, 0] - BASEMEAN_UPPER))) 
+    lower_index, upper_index = sorted((lower_index, upper_index))
 
     corrected = spectrum.copy()
     baseline = np.mean(spectrum[lower_index : upper_index + 1, 1])
@@ -1289,20 +1385,49 @@ def prepare_analysis_spectra(export_dir: Path) -> tuple[list[Path], list[Path], 
     return average_files, individual_files, sample_folders, sample_names
 
 
+def select_nnmf_inputs(
+    average_files: list[Path],
+    individual_files: list[Path],
+    sample_folders: list[str],
+    sample_names: list[str],
+) -> tuple[list[Path], list[str], list[str]]:
+    """Choose individual spectra or one arithmetic folder average for the NNMF fit."""
+    if NNMF_INPUT_MODE == "individual":
+        return individual_files, sample_folders, sample_names
+    if NNMF_INPUT_MODE != "folder_average":
+        raise ValueError(
+            "NNMF_INPUT_MODE must be 'individual' or 'folder_average'"
+        )
+    if not average_files:
+        raise FileNotFoundError("No folder-average spectra are available for the NNMF fit")
+
+    folders = [path.name.removesuffix("_arit_avg.txt") for path in average_files]
+    names = [f"{folder} (folder average)" for folder in folders]
+    return average_files, folders, names
+
+
 def normalize_spectra(wavelength: np.ndarray, spectra: np.ndarray,
                       filenames: list[str]) -> tuple[np.ndarray, np.ndarray]:
-    """Apply the same NV0 scaling, fit crop, and area normalization to either branch."""
-    nv0_index = int(np.argmin(np.abs(wavelength - NV0)))
-    scale = spectra[nv0_index]
-    invalid = ~np.isfinite(scale) | (scale <= 0)
-    if np.any(invalid):
-        names = [filenames[i] for i in np.flatnonzero(invalid)]
-        raise ValueError(f"Nonpositive or invalid intensity near {NV0} nm: {names}")
+    """Optionally scale at a wavelength, crop, and optionally normalize by area."""
+    scaled = spectra
+    if NORMALIZE_AT_WAVELENGTH:
+        normalization_index = int(np.argmin(np.abs(wavelength - NORMALIZATION_WAVELENGTH)))
+        scale = spectra[normalization_index]
+        invalid = ~np.isfinite(scale) | (scale <= 0)
+        if np.any(invalid):
+            names = [filenames[i] for i in np.flatnonzero(invalid)]
+            raise ValueError(
+                f"Nonpositive or invalid intensity near the normalization wavelength "
+                f"({NORMALIZATION_WAVELENGTH} nm): {names}"
+            )
+        scaled = spectra / scale
     selected = (wavelength > THRESHOLD_LOWER) & (wavelength <= THRESHOLD_UPPER)
     fit_wavelength = wavelength[selected]
     if len(fit_wavelength) < 2:
         raise ValueError("The fit range must contain at least two wavelength points")
-    normalized = (spectra / scale)[selected]
+    normalized = scaled[selected]
+    if not NORMALIZE_BY_AREA:
+        return fit_wavelength, normalized
     areas = trapezoid(normalized, axis=0)
     invalid = ~np.isfinite(areas) | (areas <= 0)
     if np.any(invalid):
@@ -1379,18 +1504,28 @@ def plot_processed_spectra(average_wavelength: np.ndarray, averages: np.ndarray,
     figure.savefig(figure_dir / "folder_averages.png", bbox_inches="tight")
     if not SHOW_COMPARED:
         plt.close(figure)
+    input_label = (
+        "Folder average"
+        if NNMF_INPUT_MODE == "folder_average"
+        else "Individual spectra"
+    )
+    input_filename = (
+        "folder_average_overlay"
+        if NNMF_INPUT_MODE == "folder_average"
+        else "individual_overlay"
+    )
     for folder_index, folder_name in enumerate(dict.fromkeys(sample_folders), start=1):
         figure, axis = plt.subplots(figsize=(9, 5))
         indices = [i for i, group in enumerate(sample_folders) if group == folder_name]
         sample_colours = prism_colours(len(indices))
         for color, sample in zip(sample_colours, indices):
             axis.plot(wavelength, spectra[:, sample], color=color, label=filenames[sample])
-        axis.set(title=f"Individual spectra: {folder_name}", xlabel="Wavelength (nm)",
+        axis.set(title=f"{input_label}: {folder_name}", xlabel="Wavelength (nm)",
                  ylabel="Normalized intensity")
         if len(indices) <= 12:
             axis.legend(fontsize="small")
         figure.tight_layout()
-        figure.savefig(figure_dir / f"folder_{folder_index:03d}_individual_overlay.png",
+        figure.savefig(figure_dir / f"folder_{folder_index:03d}_{input_filename}.png",
                        bbox_inches="tight")
         if not SHOW_COMPARED:
             plt.close(figure)
@@ -1399,7 +1534,7 @@ def plot_processed_spectra(average_wavelength: np.ndarray, averages: np.ndarray,
 def plot_individual_fits(wavelength: np.ndarray, measured: np.ndarray,
                         fitted: np.ndarray, components: np.ndarray,
                         filenames: list[str], figure_dir: Path) -> None:
-    """Plot every processed measurement, fit, and sample-weighted component.
+    """Plot each NNMF input, its fit, and sample-weighted components.
 
     components[wavelength, sample, component] must sum to fitted along axis 2.
     Reference spectra alone do not contain the sample-specific fitted weights.
@@ -1433,13 +1568,116 @@ def plot_individual_fits(wavelength: np.ndarray, measured: np.ndarray,
                       linestyle="-." if is_third_component
                       else (":" if component == 0 else "--"),
                       label=f"Fitted {component_name}")
-        axis.set(title=filename, xlabel="Wavelength (nm)", ylabel="Normalized intensity")
+        axis.set(title=filename, xlabel="Wavelength (nm)",
+                 ylabel="Normalized intensity" if NORMALIZE_AT_WAVELENGTH or NORMALIZE_BY_AREA
+                 else "Intensity")
         axis.legend(fontsize="small")
         figure.tight_layout()
         figure.savefig(figure_dir / f"spectrum_{sample + 1:04d}_fit.png",
                        bbox_inches="tight")
         if not SHOW_COMPARED:
             plt.close(figure)
+
+
+def plot_folder_average_fits(average_wavelength: np.ndarray, averages: np.ndarray,
+                            average_names: list[str], wavelength: np.ndarray,
+                            shared_shapes: np.ndarray, figure_dir: Path) -> np.ndarray:
+    """Fit only nonnegative weights to folder averages using the learned NNMF shapes.
+
+    Averages must already follow the selected preprocessing options. The learned
+    shapes are interpolated onto their grid and are never refitted or normalized.
+    Return weights with axes (component, folder).
+    """
+    if averages.shape != (len(average_wavelength), len(average_names)):
+        raise ValueError("Folder averages must have axes (wavelength, folder)")
+    if not average_names:
+        raise ValueError("At least one folder average is required")
+    if shared_shapes.ndim != 2 or shared_shapes.shape[0] != len(wavelength):
+        raise ValueError("Shared shapes must have axes (wavelength, component)")
+    if (len(wavelength) < 2 or len(average_wavelength) < 2
+            or np.any(np.diff(wavelength) <= 0)
+            or np.any(np.diff(average_wavelength) <= 0)):
+        raise ValueError("Folder fits require increasing wavelength grids")
+    if (not np.all(np.isfinite(averages))
+            or not np.all(np.isfinite(shared_shapes)) or np.any(shared_shapes < 0)):
+        raise ValueError("Folder averages must be finite and shared shapes finite and nonnegative")
+    # Restrict to the learned wavelength coverage rather than extrapolating shapes.
+    selected = ((average_wavelength >= wavelength[0])
+                & (average_wavelength <= wavelength[-1]))
+    fit_wavelength = average_wavelength[selected]
+    if len(fit_wavelength) < 2:
+        raise ValueError("Folder averages and learned shapes must overlap at two or more wavelengths")
+    measured = averages[selected]
+    shapes = np.column_stack([
+        np.interp(fit_wavelength, wavelength, shared_shapes[:, component])
+        for component in range(shared_shapes.shape[1])
+    ])
+    weights = np.empty((shapes.shape[1], len(average_names)))
+    for index, name in enumerate(average_names):
+        try:
+            weights[:, index], _ = nnls(shapes, measured[:, index])
+        except RuntimeError as error:
+            raise RuntimeError(f"Folder-average fit did not converge for {name}: {error}") from error
+    components = shapes[:, None, :] * weights.T[None, :, :]
+    fitted = components.sum(axis=2)
+    plot_individual_fits(
+        fit_wavelength, measured, fitted, components,
+        [f"Folder average: {Path(name).stem}" for name in average_names],
+        figure_dir / "folder_average_fits",
+    )
+    columns = min(3, len(average_names))
+    rows = (len(average_names) + columns - 1) // columns
+    grid_figure, axes = plt.subplots(
+        rows, columns, figsize=(5 * columns, 3.8 * rows),
+        sharex=True, squeeze=False, constrained_layout=True,
+    )
+    component_names = display_component_names()
+    component_colours = pastel_colours(shapes.shape[1])
+    for index, name in enumerate(average_names):
+        axis = axes.flat[index]
+        axis.plot(fit_wavelength, fitted[:, index], color="blue", label="Fit")
+        axis.plot(fit_wavelength, measured[:, index], color="red",
+                  linestyle="--", label="Measured average")
+        for component in range(shapes.shape[1]):
+            component_name = (component_names[component]
+                              if component < len(component_names)
+                              else f"component {component + 1}")
+            axis.plot(
+                fit_wavelength, components[:, index, component],
+                color=component_colours[component],
+                linestyle=(":", "--", "-.")[component % 3],
+                label=f"Fitted {component_name}",
+            )
+        axis.set(title=Path(name).stem.removesuffix("_arit_avg"),
+                 xlabel="Wavelength (nm)",
+                 ylabel="Normalized intensity" if NORMALIZE_AT_WAVELENGTH or NORMALIZE_BY_AREA
+                 else "Intensity")
+        axis.legend(fontsize="small")
+    for axis in list(axes.flat)[len(average_names):]:
+        axis.set_visible(False)
+    grid_figure.suptitle("Folder averages fitted with shared NNMF components")
+    grid_figure.savefig(figure_dir / "folder_average_fits_subplots.png",
+                        dpi=200, bbox_inches="tight")
+    if not SHOW_COMPARED:
+        plt.close(grid_figure)
+    figure, axis = plt.subplots(figsize=(10, 6))
+    colours = prism_colours(len(average_names))
+    for index, name in enumerate(average_names):
+        folder_label = Path(name).stem.removesuffix("_arit_avg")
+        axis.plot(fit_wavelength, fitted[:, index], color=colours[index],
+                  linewidth=2, label=f"{folder_label} — fit")
+        axis.plot(fit_wavelength, measured[:, index], color=colours[index],
+                  linestyle="--", linewidth=1, label=f"{folder_label} — measured")
+    axis.set(title="Folder averages fitted with shared NNMF components",
+             xlabel="Wavelength (nm)",
+             ylabel="Normalized intensity" if NORMALIZE_AT_WAVELENGTH or NORMALIZE_BY_AREA
+             else "Intensity")
+    axis.legend(fontsize="small", loc="upper left", bbox_to_anchor=(1.02, 1))
+    figure.tight_layout()
+    figure.savefig(figure_dir / "folder_average_fits_combined.png", bbox_inches="tight")
+    if not SHOW_COMPARED:
+        plt.close(figure)
+    return weights
 
 
 def plot_shared_component_shapes(wavelength: np.ndarray, shapes: np.ndarray,
@@ -1458,8 +1696,18 @@ def plot_shared_component_shapes(wavelength: np.ndarray, shapes: np.ndarray,
     for component, component_name in enumerate(display_component_names()[:COMPONENTS]):
         axis.plot(wavelength, shapes[:, component] / areas[component],
                   color=component_colours[component], label=component_name)
-    axis.axvline(NV0, color="black", linestyle="--", label=f"Plot marker 1 ({NV0} nm)")
-    axis.axvline(NVN, color="black", linestyle="--", label=f"Plot marker 2 ({NVN} nm)")
+    axis.axvline(
+        NORMALIZATION_WAVELENGTH,
+        color="black",
+        linestyle="--",
+        label=f"Normalization wavelength ({NORMALIZATION_WAVELENGTH} nm)",
+    )
+    axis.axvline(
+        REFERENCE_MARKER_WAVELENGTH,
+        color="black",
+        linestyle=":",
+        label=f"Reference marker ({REFERENCE_MARKER_WAVELENGTH} nm)",
+    )
     axis.set(title="Learned NNMF component shapes",
              xlabel="Wavelength (nm)", ylabel="Normalized intensity")
     axis.legend()
@@ -1485,15 +1733,25 @@ def normalized_reference_spectra(wavelength: np.ndarray, count: int = 2) -> np.n
 def plot_fit_overviews(wavelength: np.ndarray, fitted: np.ndarray,
                        filenames: list[str],
                        figure_dir: Path) -> None:
-    """Show reconstruction overview for all original spectra."""
+    """Show reconstruction overview for all selected NNMF inputs."""
     figure_dir.mkdir(parents=True, exist_ok=True)
     figure, axis = plt.subplots(figsize=(9, 5))
     sample_colours = prism_colours(len(filenames))
     for color, sample, filename in zip(sample_colours, range(len(filenames)), filenames):
         axis.plot(wavelength, fitted[:, sample], color=color, label=filename)
-    axis.axvline(NV0, color="black", linestyle="--", label=f"Plot marker 1 ({NV0} nm)")
-    axis.axvline(NVN, color="black", linestyle="--", label=f"Plot marker 2 ({NVN} nm)")
-    axis.set(title="Spectral reconstructions per spectrum", xlabel="Wavelength (nm)",
+    axis.axvline(
+        NORMALIZATION_WAVELENGTH,
+        color="black",
+        linestyle="--",
+        label=f"Normalization wavelength ({NORMALIZATION_WAVELENGTH} nm)",
+    )
+    axis.axvline(
+        REFERENCE_MARKER_WAVELENGTH,
+        color="black",
+        linestyle=":",
+        label=f"Reference marker ({REFERENCE_MARKER_WAVELENGTH} nm)",
+    )
+    axis.set(title="Spectral reconstructions per NNMF input", xlabel="Wavelength (nm)",
              ylabel="Normalized intensity")
     if len(filenames) <= 12:
         axis.legend(fontsize="small")
@@ -1507,7 +1765,7 @@ def export_fit_results(export_dir: Path, wavelength: np.ndarray,
                        normalized: np.ndarray, components: np.ndarray,
                        fitted: np.ndarray, filenames: list[str],
                        sample_folders: list[str]) -> pd.DataFrame:
-    """Export fitted originals; All averages individual results."""
+    """Export fitted NNMF inputs and per-input component contributions."""
     export_dir.mkdir(parents=True, exist_ok=True)
     contributions = component_percentages(wavelength, components)
     # Assemble per-spectrum columns and save the spectral results workbook.
@@ -1606,12 +1864,18 @@ def main() -> None:
     average_files, individual_files, sample_folders, filenames = prepare_analysis_spectra(export_dir)
     average_wavelength, average_spectra, average_names = assemble_tables(
         average_files, export_dir / "folder_averages")
-    individual_wavelength, spectra, _ = assemble_tables(individual_files, export_dir)
+    fit_files, fit_sample_folders, fit_filenames = select_nnmf_inputs(
+        average_files, individual_files, sample_folders, filenames
+    )
+    individual_wavelength, spectra, _ = assemble_tables(fit_files, export_dir)
     average_fit_wavelength, average_normalized = normalize_spectra(
         average_wavelength, average_spectra, average_names)
-    fit_wavelength, normalized = normalize_spectra(individual_wavelength, spectra, filenames)
+    fit_wavelength, normalized = normalize_spectra(
+        individual_wavelength, spectra, fit_filenames
+    )
     plot_processed_spectra(average_fit_wavelength, average_normalized, average_names,
-                           fit_wavelength, normalized, filenames, sample_folders, figure_dir)
+                           fit_wavelength, normalized, fit_filenames,
+                           fit_sample_folders, figure_dir)
     if USE_GAUSSIAN_REFERENCE and INIT_COMP == 0:
         gaussian_reference_path = export_dir / "ref.xlsx"
         gaussian_reference, _ = fit_gaussian_reference_curves(
@@ -1624,17 +1888,21 @@ def main() -> None:
         initial_w = gaussian_reference.copy()
     else:
         initial_w = load_reference_initialization(fit_wavelength) if INIT_COMP > 0 else None
-    approximations, weighting = fit_joint_spectra(normalized, initial_w, filenames)
+    approximations, weighting = fit_joint_spectra(
+        normalized, initial_w, fit_filenames
+    )
     wavelength = fit_wavelength
     components = approximations[:, None, :] * weighting.T[None, :, :]
     fitted = np.sum(components, axis=2)
     export_fit_results(export_dir, wavelength, normalized, components, fitted,
-                       filenames, sample_folders)
+                       fit_filenames, fit_sample_folders)
     plot_shared_component_shapes(wavelength, approximations, figure_dir)
+    plot_folder_average_fits(average_fit_wavelength, average_normalized, average_names,
+                             wavelength, approximations, figure_dir)
     plot_fit_overviews(wavelength, fitted, filenames, figure_dir)
     plot_individual_fits(wavelength, normalized, fitted, components,
                          filenames, figure_dir)
-    print(f"Analysis complete: fitted {len(filenames)} original spectra.")
+    print(f"Analysis complete: fitted {len(fit_filenames)} {NNMF_INPUT_MODE.replace('_', ' ')} spectra.")
     print(f"Results: {export_dir / 'spect.xlsx'} and {export_dir / 'ratios.xlsx'}")
     print(f"Plots: {figure_dir}")
     if SHOW_COMPARED:
